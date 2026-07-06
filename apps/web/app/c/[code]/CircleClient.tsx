@@ -228,7 +228,11 @@ export default function CircleClient({ code }: { code: string }) {
               <>
                 <h2 className="mb-2 text-2xl font-black">No decode is live</h2>
                 <p className="mb-4 text-[var(--ink-muted)]">{home.nextSetter ? `Your turn, ${home.nextSetter.displayName}.` : "Anyone can start if the seat is empty."}</p>
-                <button className="primary-button" onClick={() => { setComposer(true); setComposerStartedAt(Date.now()); void logClientEvent("composer_opened"); }}><span aria-hidden="true">✦</span> {home.nextSetter?.id === home.member?.id ? "Your turn" : "Set one now"}</button>
+                {home.nextSetter?.id === home.member?.id || !home.nextSetter ? (
+                  <button className="primary-button" onClick={() => { setComposer(true); setComposerStartedAt(Date.now()); void logClientEvent("composer_opened"); }}><span aria-hidden="true">✦</span> {home.nextSetter ? "Your turn" : "Set one now"}</button>
+                ) : (
+                  <button className="secondary-button" onClick={() => { setComposer(true); setComposerStartedAt(Date.now()); void logClientEvent("composer_opened"); }}><span aria-hidden="true">✦</span> Set one now</button>
+                )}
               </>
             )}
           </section>

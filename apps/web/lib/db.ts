@@ -123,6 +123,8 @@ export async function composeDraft(circleId: string, setterMemberId: string, inp
   const blocked = moderate([input.p1, input.p2, input.p3].join(" "));
   if (blocked) throw badRequest("This needs a gentler version. Keep it about consenting people in the circle.");
   const draft = await generateDraft(input);
+  const outputBlocked = moderate(JSON.stringify(draft));
+  if (outputBlocked) throw badRequest("This draft came out sharper than Mogji allows. Try a warmer version.");
   const stripped = stripForbiddenKeys(draft);
   const validation = validatePuzzleJson(stripped);
   if (!validation.ok) throw badRequest(validation.errors.join(" "));

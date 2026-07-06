@@ -58,6 +58,7 @@ if (validation.ok) {
       memberId: "m2",
       displayName: "Ada",
       chain: ["tub", "calm", "text"],
+      predictionMemberId: "m3",
       createdAt: "2026-07-06T08:00:00Z",
       joinedAt: "2026-07-06T07:00:00Z"
     },
@@ -66,9 +67,11 @@ if (validation.ok) {
       memberId: "m3",
       displayName: "Bo",
       chain: ["tub", "calm", "text"],
+      predictionMemberId: null,
       createdAt: "2026-07-06T08:02:00Z",
       joinedAt: "2026-07-06T06:00:00Z"
     }
   ]);
   assert.equal(reveal.crownMemberId, "m2");
+  assert.equal(reveal.readers.find((reader) => reader.memberId === "m2")?.xp, 40);
 }

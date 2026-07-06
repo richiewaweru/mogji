@@ -232,9 +232,19 @@ export function awardXp(scores: SlotScore[], options: { crown?: boolean; setting
 }
 
 export function computeReveal(puzzle: PuzzleJson, answers: ReaderAnswer[]): RevealResult {
+  const answerScores = new Map<string, SlotScore[]>();
+  for (const answer of answers) {
+    answerScores.set(answer.memberId, scoreAnswer(answer.chain, puzzle));
+  }
+  const exactReaders = new Set(
+    [...answerScores.entries()]
+      .filter(([, scores]) => scores.length > 0 && scores.every((score) => score.mark === "exact"))
+      .map(([memberId]) => memberId)
+  );
+
   const ordered = [...answers].sort((a, b) => {
-    const aScores = scoreAnswer(a.chain, puzzle);
-    const bScores = scoreAnswer(b.chain, puzzle);
+    const aScores = answerScores.get(a.memberId) ?? [];
+    const bScores = answerScores.get(b.memberId) ?? [];
     const pointDelta = sumSlotPoints(bScores) - sumSlotPoints(aScores);
     if (pointDelta !== 0) return pointDelta;
     const submitDelta = Date.parse(a.createdAt) - Date.parse(b.createdAt);
@@ -244,14 +254,15 @@ export function computeReveal(puzzle: PuzzleJson, answers: ReaderAnswer[]): Reve
 
   const crownMemberId = ordered[0]?.memberId ?? null;
   const readers = answers.map((answer) => {
-    const scores = scoreAnswer(answer.chain, puzzle);
+    const scores = answerScores.get(answer.memberId) ?? [];
     const crown = answer.memberId === crownMemberId;
+    const predictionCorrect = Boolean(answer.predictionMemberId && exactReaders.has(answer.predictionMemberId));
     return {
       memberId: answer.memberId,
       displayName: answer.displayName,
       scores,
       totalSlotPoints: sumSlotPoints(scores),
-      xp: awardXp(scores, { crown }).total,
+      xp: awardXp(scores, { crown, predictionCorrect }).total,
       crown
     };
   });
