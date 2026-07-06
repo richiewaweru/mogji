@@ -374,25 +374,10 @@ async function closeExpired(dbPromise: Promise<Database>) {
   return db;
 }
 
-async function generateDraft(input: { p1: string; p2: string; p3: string }): Promise<PuzzleJson> {
-  if (!process.env.ANTHROPIC_API_KEY || !process.env.ANTHROPIC_MODEL) return buildDraft(input);
+const composerSystemPrompt = "You build warm, teasing Mogji emoji-chain decodes for close friends. Return strict JSON only.";
 
-  const response = await fetch("https://api.anthropic.com/v1/messages", {
-    method: "POST",
-    headers: {
-      "content-type": "application/json",
-      "x-api-key": process.env.ANTHROPIC_API_KEY,
-      "anthropic-version": "2023-06-01"
-    },
-    body: JSON.stringify({
-      model: process.env.ANTHROPIC_MODEL,
-      max_tokens: 1600,
-      temperature: 0.8,
-      system: "You build warm, teasing Mogji emoji-chain decodes for close friends. Return strict JSON only.",
-      messages: [
-        {
-          role: "user",
-          content: `Moment: ${input.p1}
+function composerUserPrompt(input: { p1: string; p2: string; p3: string }) {
+  return `Moment: ${input.p1}
 What people would assume: ${input.p2}
 What really happened: ${input.p3}
 
@@ -413,21 +398,83 @@ Build a clean playable puzzle_json object only:
   ]
 }
 
-Rules: setup is second-person plural and must not reveal what really happened. Exactly 3 slots. Exactly 4 options per slot. The assumption should be a seductive wrong option. The truth should be exact. authorCut is 15 words or fewer and follows "It looked like X. It was Y." Tone is teasing, warm, never humiliating. Do not include strategy, reasoning, metadata, composer inputs, or any non-playable fields.`
-        }
-      ]
-    })
-  });
+Rules: setup is second-person plural and must not reveal what really happened. Exactly 3 slots. Exactly 4 options per slot. The assumption should be a seductive wrong option. The truth should be exact. authorCut is 15 words or fewer and follows "It looked like X. It was Y." Tone is teasing, warm, never humiliating. Do not include strategy, reasoning, metadata, composer inputs, or any non-playable fields.`;
+}
 
-  if (!response.ok) return buildDraft(input);
-  const data = (await response.json()) as { content?: Array<{ type: string; text?: string }> };
-  const text = data.content?.find((part) => part.type === "text")?.text ?? "";
+type ComposerProvider = "anthropic" | "openai" | "local";
+
+function composerProvider(): ComposerProvider {
+  const configured = (process.env.COMPOSER_PROVIDER || "").toLowerCase();
+  if (configured === "anthropic" || configured === "openai" || configured === "local") return configured;
+  if (process.env.ANTHROPIC_API_KEY) return "anthropic";
+  if (process.env.OPENAI_API_KEY) return "openai";
+  return "local";
+}
+
+function parsePuzzleText(text: string): PuzzleJson | null {
   const jsonText = text.match(/\{[\s\S]*\}/)?.[0] ?? text;
   try {
     return JSON.parse(jsonText) as PuzzleJson;
   } catch {
+    return null;
+  }
+}
+
+async function anthropicDraft(input: { p1: string; p2: string; p3: string }): Promise<PuzzleJson | null> {
+  if (!process.env.ANTHROPIC_API_KEY) return null;
+  const response = await fetch("https://api.anthropic.com/v1/messages", {
+    method: "POST",
+    headers: {
+      "content-type": "application/json",
+      "x-api-key": process.env.ANTHROPIC_API_KEY,
+      "anthropic-version": "2023-06-01"
+    },
+    body: JSON.stringify({
+      model: process.env.ANTHROPIC_MODEL || "claude-sonnet-5",
+      max_tokens: 1600,
+      temperature: 0.8,
+      system: composerSystemPrompt,
+      messages: [{ role: "user", content: composerUserPrompt(input) }]
+    })
+  });
+  if (!response.ok) return null;
+  const data = (await response.json()) as { content?: Array<{ type: string; text?: string }> };
+  return parsePuzzleText(data.content?.find((part) => part.type === "text")?.text ?? "");
+}
+
+async function openAiDraft(input: { p1: string; p2: string; p3: string }): Promise<PuzzleJson | null> {
+  if (!process.env.OPENAI_API_KEY) return null;
+  const baseUrl = (process.env.OPENAI_BASE_URL || "https://api.openai.com/v1").replace(/\/$/, "");
+  const response = await fetch(`${baseUrl}/chat/completions`, {
+    method: "POST",
+    headers: {
+      "content-type": "application/json",
+      authorization: `Bearer ${process.env.OPENAI_API_KEY}`
+    },
+    body: JSON.stringify({
+      model: process.env.OPENAI_MODEL || "gpt-4o-mini",
+      max_tokens: 1600,
+      temperature: 0.8,
+      messages: [
+        { role: "system", content: composerSystemPrompt },
+        { role: "user", content: composerUserPrompt(input) }
+      ]
+    })
+  });
+  if (!response.ok) return null;
+  const data = (await response.json()) as { choices?: Array<{ message?: { content?: string } }> };
+  return parsePuzzleText(data.choices?.[0]?.message?.content ?? "");
+}
+
+async function generateDraft(input: { p1: string; p2: string; p3: string }): Promise<PuzzleJson> {
+  const provider = composerProvider();
+  try {
+    if (provider === "anthropic") return (await anthropicDraft(input)) ?? buildDraft(input);
+    if (provider === "openai") return (await openAiDraft(input)) ?? buildDraft(input);
+  } catch {
     return buildDraft(input);
   }
+  return buildDraft(input);
 }
 
 function buildDraft(input: { p1: string; p2: string; p3: string }): PuzzleJson {
