@@ -238,6 +238,14 @@ export async function adminReadout() {
   });
 }
 
+export async function closeExpiredDecodes() {
+  const db = await readDb();
+  const expired = db.decodes.filter((decode) => decode.status === "live" && decode.closesAt && Date.parse(decode.closesAt) <= Date.now());
+  expired.forEach((decode) => revealDecode(db, decode));
+  await writeDb(db);
+  return { closed: expired.length, decodeIds: expired.map((decode) => decode.id) };
+}
+
 export async function shareCardPayload(decodeId: string) {
   const db = await readDb();
   const decode = db.decodes.find((row) => row.id === decodeId);
