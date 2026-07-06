@@ -7,7 +7,7 @@ export async function POST(request: Request) {
       name: body.name || "New Circle",
       vibeEmoji: body.vibeEmoji || "🔥",
       displayName: body.displayName || "Setter",
-      seedDecode: Boolean(body.seed_decode || body.seedDecode)
+      seedDecode: !(body.seed_decode === false || body.seedDecode === false)
     });
     return Response.json({ code: result.circle.code, member_token: result.memberToken, circle: result.circle, member: result.member });
   } catch (error) {

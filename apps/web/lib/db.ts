@@ -571,30 +571,45 @@ async function supabaseRows<T>(table: string): Promise<T[]> {
 
 async function upsertSupabase<T>(table: string, rows: T[], onConflict = "id") {
   if (!rows.length) return;
-  await supabaseFetch(`/${table}?on_conflict=${encodeURIComponent(onConflict)}`, {
+  const response = await supabaseFetch(`/${table}?on_conflict=${encodeURIComponent(onConflict)}`, {
     method: "POST",
-    headers: { Prefer: "resolution=merge-duplicates" },
+    headers: { Prefer: "resolution=merge-duplicates,return=representation" },
     body: JSON.stringify(rows)
   });
+  const written = (await response.json()) as unknown[];
+  if (written.length !== rows.length) {
+    throw new Error(`Supabase ${table} upsert wrote ${written.length} of ${rows.length} rows.`);
+  }
 }
 
 async function supabaseFetch(pathname: string, init: RequestInit) {
   const baseUrl = process.env.NEXT_PUBLIC_SUPABASE_URL;
   const key = process.env.SUPABASE_SERVICE_ROLE_KEY;
   if (!baseUrl || !key) throw new Error("Supabase URL and service-role key are required.");
-  const response = await fetch(`${baseUrl}/rest/v1${pathname}`, {
-    ...init,
-    headers: {
-      apikey: key,
-      authorization: `Bearer ${key}`,
-      "content-type": "application/json",
-      ...headersObject(init.headers)
+
+  let lastError: unknown;
+  for (let attempt = 0; attempt < 3; attempt += 1) {
+    try {
+      const response = await fetch(`${baseUrl}/rest/v1${pathname}`, {
+        ...init,
+        headers: {
+          apikey: key,
+          authorization: `Bearer ${key}`,
+          "content-type": "application/json",
+          ...headersObject(init.headers)
+        }
+      });
+      if (!response.ok) {
+        throw new Error(`Supabase ${init.method ?? "GET"} ${pathname} failed: ${response.status} ${await response.text()}`);
+      }
+      return response;
+    } catch (error) {
+      lastError = error;
+      await new Promise((resolve) => setTimeout(resolve, 250 * (attempt + 1)));
     }
-  });
-  if (!response.ok) {
-    throw new Error(`Supabase ${init.method ?? "GET"} ${pathname} failed: ${response.status} ${await response.text()}`);
   }
-  return response;
+
+  throw lastError instanceof Error ? lastError : new Error("Supabase request failed.");
 }
 
 function headersObject(headers: HeadersInit | undefined) {
