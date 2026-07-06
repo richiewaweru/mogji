@@ -59,7 +59,7 @@ type Database = {
 
 const dbPath = path.join(process.cwd(), "..", "..", "data", "dev-db.json");
 
-export async function createCircle(input: { name: string; vibeEmoji: string; displayName: string }) {
+export async function createCircle(input: { name: string; vibeEmoji: string; displayName: string; seedDecode?: boolean }) {
   const db = await readDb();
   const circle: Circle = {
     id: randomUUID(),
@@ -69,12 +69,14 @@ export async function createCircle(input: { name: string; vibeEmoji: string; dis
     createdAt: now()
   };
   const member = createMember(circle.id, input.displayName || "Setter");
-  const decode = createDecode(circle.id, member.id, seedDecode, "live");
   db.circles.push(circle);
   db.members.push(member);
-  db.decodes.push(decode);
   db.events.push(event("circle_created", circle.id, member.id, { code: circle.code }));
-  db.events.push(event("decode_set", circle.id, member.id, { decodeId: decode.id, seed: true }));
+  if (input.seedDecode) {
+    const decode = createDecode(circle.id, member.id, seedDecode, "live");
+    db.decodes.push(decode);
+    db.events.push(event("decode_set", circle.id, member.id, { decodeId: decode.id, seed: true }));
+  }
   await writeDb(db);
   return { circle, member, memberToken: signMemberToken(tokenPayload(member)) };
 }
