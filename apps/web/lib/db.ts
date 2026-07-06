@@ -524,10 +524,9 @@ async function readSupabaseDb(): Promise<Database> {
 }
 
 async function writeSupabaseDb(db: Database) {
-  await Promise.all([
-    upsertSupabase("circles", db.circles.map((row): CircleRow => ({ id: row.id, code: row.code, name: row.name, vibe_emoji: row.vibeEmoji, created_at: row.createdAt }))),
-    upsertSupabase("members", db.members.map((row): MemberRow => ({ id: row.id, circle_id: row.circleId, anon_token: row.anonToken, display_name: row.displayName, joined_at: row.joinedAt }))),
-    upsertSupabase("decodes", db.decodes.map((row): DecodeRow => ({
+  await upsertSupabase("circles", db.circles.map((row): CircleRow => ({ id: row.id, code: row.code, name: row.name, vibe_emoji: row.vibeEmoji, created_at: row.createdAt })));
+  await upsertSupabase("members", db.members.map((row): MemberRow => ({ id: row.id, circle_id: row.circleId, anon_token: row.anonToken, display_name: row.displayName, joined_at: row.joinedAt })));
+  await upsertSupabase("decodes", db.decodes.map((row): DecodeRow => ({
       id: row.id,
       circle_id: row.circleId,
       setter_member_id: row.setterMemberId,
@@ -535,23 +534,22 @@ async function writeSupabaseDb(db: Database) {
       status: row.status,
       created_at: row.createdAt,
       closes_at: row.closesAt
-    }))),
-    upsertSupabase("answers", db.answers.map((row): AnswerRow => ({
+    })));
+  await upsertSupabase("answers", db.answers.map((row): AnswerRow => ({
       decode_id: row.decodeId,
       member_id: row.memberId,
       chain: row.chain,
       prediction_member_id: row.predictionMemberId,
       created_at: row.createdAt
-    })), "decode_id,member_id"),
-    upsertSupabase("events", db.events.map((row): EventRowDb => ({
+    })), "decode_id,member_id");
+  await upsertSupabase("events", db.events.map((row): EventRowDb => ({
       id: row.id,
       circle_id: row.circleId,
       member_id: row.memberId,
       name: row.name,
       payload: row.payload,
       created_at: row.createdAt
-    })))
-  ]);
+    })));
 }
 
 async function supabaseRows<T>(table: string): Promise<T[]> {

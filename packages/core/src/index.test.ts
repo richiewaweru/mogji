@@ -49,7 +49,9 @@ assert.equal(validation.ok, true);
 if (validation.ok) {
   const scores = scoreAnswer(["tub", "panic", "tea"], validation.puzzle);
   assert.deepEqual(scores.map((score) => score.mark), ["exact", "alternate", "alternate"]);
-  assert.equal("answer" in publicPuzzle(validation.puzzle).slots[0], false);
+  const firstPublicSlot = publicPuzzle(validation.puzzle).slots[0];
+  assert.ok(firstPublicSlot);
+  assert.equal("answer" in firstPublicSlot, false);
   const reveal = computeReveal(validation.puzzle, [
     {
       decodeId: "d1",

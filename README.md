@@ -37,6 +37,16 @@ pnpm dev
 
 Then open `http://localhost:3000/new`.
 
-## Verification note
+## Verification
 
-This machine ran out of disk space during dependency installation, so local `pnpm install`, typecheck, and dev-server verification could not complete yet.
+The current build has been verified with:
+
+```bash
+supabase db push --linked
+supabase migration list --linked
+pnpm --filter @mogji/core test
+pnpm typecheck
+pnpm build
+```
+
+The local dev server runs at `http://127.0.0.1:3000`.

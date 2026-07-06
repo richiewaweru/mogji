@@ -3,7 +3,10 @@
 !.env.example
 node_modules
 .next
+.turbo
 dist
 coverage
 data/dev-db.json
 *.tsbuildinfo
+*.log
+supabase/.temp

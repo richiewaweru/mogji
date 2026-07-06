@@ -336,6 +336,12 @@ function Composer(props: {
   onStart: () => void;
   onCancel: () => void;
 }) {
+  const promptFields: Array<[keyof typeof props.prompts, string]> = [
+    ["p1", "Pick a moment from your week — anything."],
+    ["p2", "What would people assume about it?"],
+    ["p3", "What actually happened / what was really going on?"]
+  ];
+
   useEffect(() => props.onStart(), []);
   if (props.draft) {
     return (
@@ -358,14 +364,10 @@ function Composer(props: {
   return (
     <section className="raised-surface">
       <h2 className="mb-4 text-2xl font-black">Set a decode</h2>
-      {[
-        ["p1", "Pick a moment from your week — anything."],
-        ["p2", "What would people assume about it?"],
-        ["p3", "What actually happened / what was really going on?"]
-      ].map(([key, label]) => (
+      {promptFields.map(([key, label]) => (
         <label key={key} className="mb-4 grid gap-2 font-bold">
           {label}
-          <textarea className="min-h-24 rounded-2xl border border-[var(--line)] bg-[var(--paper)] p-4" value={props.prompts[key as keyof typeof props.prompts]} onChange={(event) => props.setPrompts({ ...props.prompts, [key]: event.target.value })} />
+          <textarea className="min-h-24 rounded-2xl border border-[var(--line)] bg-[var(--paper)] p-4" value={props.prompts[key]} onChange={(event) => props.setPrompts({ ...props.prompts, [key]: event.target.value })} />
         </label>
       ))}
       <div className="grid gap-3">
