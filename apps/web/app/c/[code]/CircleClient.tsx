@@ -466,6 +466,27 @@ function Composer(props: {
 
 function RevealView({ payload, code, onBack }: { payload: RevealPayload; code: string; onBack: () => void }) {
   const crown = payload.reveal.readers.find((reader) => reader.crown);
+  const [shareState, setShareState] = useState<"idle" | "copied">("idle");
+
+  async function share() {
+    const url = `${window.location.origin}/r/${payload.decode.id}`;
+    const text = `${payload.decode.puzzle.title} — "${payload.decode.puzzle.authorCut}" Who reads the group best?`;
+    if (navigator.share) {
+      try {
+        await navigator.share({ title: payload.decode.puzzle.title, text, url });
+        return;
+      } catch {
+        // user cancelled or share failed; fall through to copy
+      }
+    }
+    try {
+      await navigator.clipboard.writeText(`${text} ${url}`);
+      setShareState("copied");
+      setTimeout(() => setShareState("idle"), 2500);
+    } catch {
+      window.open(url, "_blank");
+    }
+  }
   return (
     <section className="reveal rounded-[20px] border border-[var(--line)] bg-[var(--paper-raised)] p-5 shadow-[0_8px_24px_var(--shadow-flat)]">
       <div className="mb-2 text-sm font-bold text-[var(--amber-ink)]">The reveal</div>
@@ -484,7 +505,8 @@ function RevealView({ payload, code, onBack }: { payload: RevealPayload; code: s
       <p className="mb-5 text-[var(--ink-muted)]">{payload.reveal.distributionLine}</p>
       <p className="mb-5 font-black">{crown?.displayName ?? "Someone"} read it best.</p>
       <div className="grid gap-3">
-        <a className="primary-button" href={`/api/v1/decodes/${payload.decode.id}/card.png`} target="_blank" rel="noreferrer"><span aria-hidden="true">↗</span> Send to the circle</a>
+        <button className="primary-button" onClick={share}><span aria-hidden="true">↗</span> {shareState === "copied" ? "Link copied — paste it in the chat" : "Send to the circle"}</button>
+        <a className="secondary-button" href={`/api/v1/decodes/${payload.decode.id}/card.png`} target="_blank" rel="noreferrer"><span aria-hidden="true">🖼</span> View card image</a>
         <button className="secondary-button" onClick={onBack}>Your turn →</button>
       </div>
     </section>

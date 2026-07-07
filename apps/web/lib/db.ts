@@ -289,6 +289,23 @@ export async function closeExpiredDecodes() {
   return { closed: expired.length, decodeIds: expired.map((decode) => decode.id) };
 }
 
+// Lightweight read for the /r/:id share landing page and its OG tags.
+// No event logging: link-preview crawlers hit this on every unfurl.
+export async function getShareInfo(decodeId: string) {
+  const db = await readDb({ kind: "decodeId", decodeId });
+  const decode = db.decodes.find((row) => row.id === decodeId);
+  if (!decode || decode.status !== "revealed") throw notFound("This reveal is not available.");
+  const circle = db.circles.find((row) => row.id === decode.circleId);
+  if (!circle) throw notFound("This reveal is not available.");
+  return {
+    title: decode.puzzleJson.title,
+    authorCut: decode.puzzleJson.authorCut,
+    code: circle.code,
+    circleName: circle.name,
+    vibeEmoji: circle.vibeEmoji
+  };
+}
+
 export async function shareCardPayload(decodeId: string) {
   const db = await readDb({ kind: "decodeId", decodeId });
   const decode = db.decodes.find((row) => row.id === decodeId);
