@@ -444,8 +444,11 @@ async function anthropicDraft(input: { p1: string; p2: string; p3: string }): Pr
 
 async function openAiDraft(input: { p1: string; p2: string; p3: string }): Promise<PuzzleJson | null> {
   if (!process.env.OPENAI_API_KEY) return null;
+  // Accept either a base URL (https://api.deepseek.com/v1) or a full
+  // endpoint URL pasted from provider docs (.../chat/completions).
   const baseUrl = (process.env.OPENAI_BASE_URL || "https://api.openai.com/v1").replace(/\/$/, "");
-  const response = await fetch(`${baseUrl}/chat/completions`, {
+  const endpoint = baseUrl.endsWith("/chat/completions") ? baseUrl : `${baseUrl}/chat/completions`;
+  const response = await fetch(endpoint, {
     method: "POST",
     headers: {
       "content-type": "application/json",
