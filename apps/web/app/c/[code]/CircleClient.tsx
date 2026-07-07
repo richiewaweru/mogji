@@ -92,7 +92,7 @@ export default function CircleClient({ code }: { code: string }) {
     const response = await fetch(`/api/v1/decodes/${home.liveDecode.id}/answer`, {
       method: "POST",
       headers: { "content-type": "application/json", ...(authHeaders ?? {}) },
-      body: JSON.stringify({ chain: selected, prediction })
+      body: JSON.stringify({ chain: selected, prediction: prediction || null })
     });
     const data = await response.json();
     if (!response.ok) setError(data.error ?? "Could not submit.");

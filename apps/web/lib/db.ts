@@ -202,7 +202,15 @@ export async function answerDecode(memberToken: MemberToken, decodeId: string, c
     throw badRequest("You already answered this one. One shot, no edits — the reveal will show how you did.");
   }
   if (chain.length !== decode.puzzleJson.slots.length) throw badRequest("Pick an emoji for every slot before submitting.");
-  db.answers.push({ decodeId, memberId: memberToken.memberId, chain, predictionMemberId: predictionMemberId ?? null, createdAt: now() });
+  // The prediction is optional and never blocks submission: drop anything
+  // that isn't a real member of this circle (empty string, stale id, self).
+  const prediction =
+    predictionMemberId &&
+    predictionMemberId !== memberToken.memberId &&
+    db.members.some((member) => member.id === predictionMemberId && member.circleId === decode.circleId)
+      ? predictionMemberId
+      : null;
+  db.answers.push({ decodeId, memberId: memberToken.memberId, chain, predictionMemberId: prediction, createdAt: now() });
   db.events.push(event("answer_submitted", decode.circleId, memberToken.memberId, { decodeId }));
   await writeDb(db);
   return { ok: true };
