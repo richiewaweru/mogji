@@ -60,10 +60,10 @@ type Database = {
 const dbPath = path.join(process.cwd(), "..", "..", "data", "dev-db.json");
 
 export async function createCircle(input: { name: string; vibeEmoji: string; displayName: string; seedDecode?: boolean }) {
-  const db = await readDb();
+  const db = await readDb({ kind: "none" });
   const circle: Circle = {
     id: randomUUID(),
-    code: uniqueCode(db),
+    code: await uniqueCode(db),
     name: input.name.trim(),
     vibeEmoji: input.vibeEmoji.trim() || "🔥",
     createdAt: now()
@@ -82,7 +82,7 @@ export async function createCircle(input: { name: string; vibeEmoji: string; dis
 }
 
 export async function joinCircle(code: string, displayName: string, existingToken?: MemberToken | null, viaShareCard = false) {
-  const db = await readDb();
+  const db = await readDb({ kind: "circleCode", code });
   const circle = findCircle(db, code);
   if (!circle) throw notFound("Circle not found.");
   const existing = existingToken?.circleId === circle.id ? db.members.find((member) => member.id === existingToken.memberId) : null;
@@ -96,7 +96,7 @@ export async function joinCircle(code: string, displayName: string, existingToke
 }
 
 export async function getCircleHome(code: string, token?: MemberToken | null) {
-  const db = await closeExpired(readDb());
+  const db = await closeExpired(readDb({ kind: "circleCode", code }));
   const circle = findCircle(db, code);
   if (!circle) throw notFound("Circle not found.");
   const member = token?.circleId === circle.id ? db.members.find((row) => row.id === token.memberId) ?? null : null;
@@ -125,7 +125,7 @@ export async function composeDraft(
   input: { p1: string; p2: string; p3: string },
   previousDecodeId?: string | null
 ) {
-  const db = await readDb();
+  const db = await readDb({ kind: "circleId", circleId });
   const previousDraft = previousDecodeId
     ? db.decodes.find(
         (row) =>
@@ -169,7 +169,7 @@ export async function composeDraft(
 }
 
 export async function publishDecode(memberToken: MemberToken, decodeId: string, puzzle?: PuzzleJson) {
-  const db = await readDb();
+  const db = await readDb({ kind: "decodeId", decodeId });
   const decode = db.decodes.find((row) => row.id === decodeId);
   if (!decode) throw notFound("Decode not found.");
   requireMember(memberToken, decode.circleId);
@@ -192,7 +192,7 @@ export async function publishDecode(memberToken: MemberToken, decodeId: string, 
 }
 
 export async function answerDecode(memberToken: MemberToken, decodeId: string, chain: string[], predictionMemberId?: string | null) {
-  const db = await readDb();
+  const db = await readDb({ kind: "decodeId", decodeId });
   const decode = db.decodes.find((row) => row.id === decodeId);
   if (!decode) throw notFound("Decode not found.");
   requireMember(memberToken, decode.circleId);
@@ -209,7 +209,7 @@ export async function answerDecode(memberToken: MemberToken, decodeId: string, c
 }
 
 export async function closeDecode(memberToken: MemberToken, decodeId: string, automated = false) {
-  const db = await readDb();
+  const db = await readDb({ kind: "decodeId", decodeId });
   const decode = db.decodes.find((row) => row.id === decodeId);
   if (!decode) throw notFound("Decode not found.");
   requireMember(memberToken, decode.circleId);
@@ -222,7 +222,7 @@ export async function closeDecode(memberToken: MemberToken, decodeId: string, au
 }
 
 export async function getReveal(memberToken: MemberToken, decodeId: string) {
-  const db = await readDb();
+  const db = await readDb({ kind: "decodeId", decodeId });
   const decode = db.decodes.find((row) => row.id === decodeId);
   if (!decode) throw notFound("Decode not found.");
   requireMember(memberToken, decode.circleId);
@@ -233,7 +233,7 @@ export async function getReveal(memberToken: MemberToken, decodeId: string) {
 }
 
 export async function deleteDecode(memberToken: MemberToken, decodeId: string) {
-  const db = await readDb();
+  const db = await readDb({ kind: "decodeId", decodeId });
   const decode = db.decodes.find((row) => row.id === decodeId);
   if (!decode) throw notFound("Decode not found.");
   requireMember(memberToken, decode.circleId);
@@ -245,7 +245,7 @@ export async function deleteDecode(memberToken: MemberToken, decodeId: string) {
 }
 
 export async function logEvent(memberToken: MemberToken | null, input: { name: string; circleId?: string | null; payload?: Record<string, unknown> }) {
-  const db = await readDb();
+  const db = await readDb({ kind: "none" });
   db.events.push(event(input.name, input.circleId ?? memberToken?.circleId ?? null, memberToken?.memberId ?? null, input.payload ?? {}));
   await writeDb(db);
   return { ok: true };
@@ -274,7 +274,7 @@ export async function adminReadout() {
 }
 
 export async function closeExpiredDecodes() {
-  const db = await readDb();
+  const db = await readDb({ kind: "expiredLive" });
   const expired = db.decodes.filter((decode) => decode.status === "live" && decode.closesAt && Date.parse(decode.closesAt) <= Date.now());
   expired.forEach((decode) => revealDecode(db, decode));
   await writeDb(db);
@@ -282,7 +282,7 @@ export async function closeExpiredDecodes() {
 }
 
 export async function shareCardPayload(decodeId: string) {
-  const db = await readDb();
+  const db = await readDb({ kind: "decodeId", decodeId });
   const decode = db.decodes.find((row) => row.id === decodeId);
   if (!decode) throw notFound("Decode not found.");
   if (decode.status !== "revealed") throw badRequest("Share cards are generated after reveal.");
@@ -614,12 +614,26 @@ function buildDraft(input: { p1: string; p2: string; p3: string }): PuzzleJson {
   };
 }
 
-async function readDb(): Promise<Database> {
-  if (useSupabaseRest()) return readSupabaseDb();
+// Scoped reads: load only the rows a request can touch. "all" is reserved
+// for admin/analytics surfaces.
+type DbScope =
+  | { kind: "all" }
+  | { kind: "none" }
+  | { kind: "circleId"; circleId: string }
+  | { kind: "circleCode"; code: string }
+  | { kind: "decodeId"; decodeId: string }
+  | { kind: "expiredLive" };
+
+// Snapshot of each row as it looked at read time, so writes only upsert
+// rows that were added or actually changed.
+const dbBaselines = new WeakMap<Database, Map<string, string>>();
+
+async function readDb(scope: DbScope = { kind: "all" }): Promise<Database> {
+  if (useSupabaseRest()) return readSupabaseDb(scope);
   try {
     return JSON.parse(await readFile(dbPath, "utf8")) as Database;
   } catch {
-    return { circles: [], members: [], decodes: [], answers: [], events: [] };
+    return emptyDatabase();
   }
 }
 
@@ -636,15 +650,101 @@ function useSupabaseRest() {
   return process.env.USE_DEV_FILE_DB === "false" && Boolean(process.env.NEXT_PUBLIC_SUPABASE_URL && process.env.SUPABASE_SERVICE_ROLE_KEY);
 }
 
-async function readSupabaseDb(): Promise<Database> {
-  const [circles, members, decodes, answers, events] = await Promise.all([
-    supabaseRows<CircleRow>("circles"),
-    supabaseRows<MemberRow>("members"),
-    supabaseRows<DecodeRow>("decodes"),
-    supabaseRows<AnswerRow>("answers"),
-    supabaseRows<EventRowDb>("events")
-  ]);
+function emptyDatabase(): Database {
+  return { circles: [], members: [], decodes: [], answers: [], events: [] };
+}
 
+const toCircleRow = (row: Circle): CircleRow => ({ id: row.id, code: row.code, name: row.name, vibe_emoji: row.vibeEmoji, created_at: row.createdAt });
+const toMemberRow = (row: Member): MemberRow => ({ id: row.id, circle_id: row.circleId, anon_token: row.anonToken, display_name: row.displayName, joined_at: row.joinedAt });
+const toDecodeRow = (row: Decode): DecodeRow => ({
+  id: row.id,
+  circle_id: row.circleId,
+  setter_member_id: row.setterMemberId,
+  puzzle_json: row.puzzleJson,
+  status: row.status,
+  created_at: row.createdAt,
+  closes_at: row.closesAt
+});
+const toAnswerRow = (row: Answer): AnswerRow => ({
+  decode_id: row.decodeId,
+  member_id: row.memberId,
+  chain: row.chain,
+  prediction_member_id: row.predictionMemberId,
+  created_at: row.createdAt
+});
+const toEventRow = (row: EventRow): EventRowDb => ({
+  id: row.id,
+  circle_id: row.circleId,
+  member_id: row.memberId,
+  name: row.name,
+  payload: row.payload,
+  created_at: row.createdAt
+});
+
+function baselineEntries(db: Database): Map<string, string> {
+  const baseline = new Map<string, string>();
+  for (const row of db.circles) baseline.set(`circles:${row.id}`, JSON.stringify(toCircleRow(row)));
+  for (const row of db.members) baseline.set(`members:${row.id}`, JSON.stringify(toMemberRow(row)));
+  for (const row of db.decodes) baseline.set(`decodes:${row.id}`, JSON.stringify(toDecodeRow(row)));
+  for (const row of db.answers) baseline.set(`answers:${row.decodeId}|${row.memberId}`, JSON.stringify(toAnswerRow(row)));
+  for (const row of db.events) baseline.set(`events:${row.id}`, JSON.stringify(toEventRow(row)));
+  return baseline;
+}
+
+async function scopeCircleIds(scope: DbScope): Promise<string[]> {
+  if (scope.kind === "circleId") return [scope.circleId];
+  if (scope.kind === "circleCode") {
+    const rows = await supabaseRows<{ id: string }>(`circles?code=ilike.${encodeURIComponent(scope.code)}&select=id`);
+    return rows.map((row) => row.id);
+  }
+  if (scope.kind === "decodeId") {
+    const rows = await supabaseRows<{ circle_id: string }>(`decodes?id=eq.${encodeURIComponent(scope.decodeId)}&select=circle_id`);
+    return rows.map((row) => row.circle_id);
+  }
+  if (scope.kind === "expiredLive") {
+    const rows = await supabaseRows<{ circle_id: string }>(`decodes?status=eq.live&closes_at=lte.${encodeURIComponent(now())}&select=circle_id`);
+    return [...new Set(rows.map((row) => row.circle_id))];
+  }
+  return [];
+}
+
+async function readSupabaseDb(scope: DbScope): Promise<Database> {
+  let db: Database;
+  if (scope.kind === "none") {
+    db = emptyDatabase();
+  } else if (scope.kind === "all") {
+    const [circles, members, decodes, answers, events] = await Promise.all([
+      supabaseRows<CircleRow>("circles?select=*"),
+      supabaseRows<MemberRow>("members?select=*"),
+      supabaseRows<DecodeRow>("decodes?select=*"),
+      supabaseRows<AnswerRow>("answers?select=*"),
+      supabaseRows<EventRowDb>("events?select=*")
+    ]);
+    db = mapDatabase(circles, members, decodes, answers, events);
+  } else {
+    const circleIds = await scopeCircleIds(scope);
+    if (!circleIds.length) {
+      db = emptyDatabase();
+    } else {
+      const filter = `in.(${circleIds.map((id) => encodeURIComponent(id)).join(",")})`;
+      const [circles, members, decodes] = await Promise.all([
+        supabaseRows<CircleRow>(`circles?id=${filter}&select=*`),
+        supabaseRows<MemberRow>(`members?circle_id=${filter}&select=*`),
+        supabaseRows<DecodeRow>(`decodes?circle_id=${filter}&select=*`)
+      ]);
+      const decodeIds = decodes.map((row) => row.id);
+      const answers = decodeIds.length
+        ? await supabaseRows<AnswerRow>(`answers?decode_id=in.(${decodeIds.map((id) => encodeURIComponent(id)).join(",")})&select=*`)
+        : [];
+      // Historical events are never read outside admin scope; new ones append.
+      db = mapDatabase(circles, members, decodes, answers, []);
+    }
+  }
+  dbBaselines.set(db, baselineEntries(db));
+  return db;
+}
+
+function mapDatabase(circles: CircleRow[], members: MemberRow[], decodes: DecodeRow[], answers: AnswerRow[], events: EventRowDb[]): Database {
   return {
     circles: circles.map((row) => ({ id: row.id, code: row.code, name: row.name, vibeEmoji: row.vibe_emoji, createdAt: row.created_at })),
     members: members.map((row) => ({ id: row.id, circleId: row.circle_id, anonToken: row.anon_token, displayName: row.display_name, joinedAt: row.joined_at })),
@@ -677,36 +777,23 @@ async function readSupabaseDb(): Promise<Database> {
 }
 
 async function writeSupabaseDb(db: Database) {
-  await upsertSupabase("circles", db.circles.map((row): CircleRow => ({ id: row.id, code: row.code, name: row.name, vibe_emoji: row.vibeEmoji, created_at: row.createdAt })));
-  await upsertSupabase("members", db.members.map((row): MemberRow => ({ id: row.id, circle_id: row.circleId, anon_token: row.anonToken, display_name: row.displayName, joined_at: row.joinedAt })));
-  await upsertSupabase("decodes", db.decodes.map((row): DecodeRow => ({
-      id: row.id,
-      circle_id: row.circleId,
-      setter_member_id: row.setterMemberId,
-      puzzle_json: row.puzzleJson,
-      status: row.status,
-      created_at: row.createdAt,
-      closes_at: row.closesAt
-    })));
-  await upsertSupabase("answers", db.answers.map((row): AnswerRow => ({
-      decode_id: row.decodeId,
-      member_id: row.memberId,
-      chain: row.chain,
-      prediction_member_id: row.predictionMemberId,
-      created_at: row.createdAt
-    })), "decode_id,member_id");
-  await upsertSupabase("events", db.events.map((row): EventRowDb => ({
-      id: row.id,
-      circle_id: row.circleId,
-      member_id: row.memberId,
-      name: row.name,
-      payload: row.payload,
-      created_at: row.createdAt
-    })));
+  const baseline = dbBaselines.get(db) ?? new Map<string, string>();
+  const dirty = <T>(entries: Array<{ key: string; row: T }>) =>
+    entries.filter(({ key, row }) => baseline.get(key) !== JSON.stringify(row)).map(({ row }) => row);
+
+  await upsertSupabase("circles", dirty(db.circles.map((row) => ({ key: `circles:${row.id}`, row: toCircleRow(row) }))));
+  await upsertSupabase("members", dirty(db.members.map((row) => ({ key: `members:${row.id}`, row: toMemberRow(row) }))));
+  await upsertSupabase("decodes", dirty(db.decodes.map((row) => ({ key: `decodes:${row.id}`, row: toDecodeRow(row) }))));
+  await upsertSupabase(
+    "answers",
+    dirty(db.answers.map((row) => ({ key: `answers:${row.decodeId}|${row.memberId}`, row: toAnswerRow(row) }))),
+    "decode_id,member_id"
+  );
+  await upsertSupabase("events", dirty(db.events.map((row) => ({ key: `events:${row.id}`, row: toEventRow(row) }))));
 }
 
-async function supabaseRows<T>(table: string): Promise<T[]> {
-  const response = await supabaseFetch(`/${table}?select=*`, { method: "GET" });
+async function supabaseRows<T>(query: string): Promise<T[]> {
+  const response = await supabaseFetch(`/${query}`, { method: "GET" });
   return (await response.json()) as T[];
 }
 
@@ -811,10 +898,15 @@ function createDecode(circleId: string, setterMemberId: string, puzzleJson: Puzz
   return { id: randomUUID(), circleId, setterMemberId, puzzleJson, status, createdAt: now(), closesAt: status === "live" ? inHours(48) : null, reveal: null };
 }
 
-function uniqueCode(db: Database): string {
+async function uniqueCode(db: Database): Promise<string> {
   for (;;) {
     const code = Math.random().toString(36).slice(2, 8).toUpperCase();
-    if (!db.circles.some((circle) => circle.code === code)) return code;
+    if (db.circles.some((circle) => circle.code === code)) continue;
+    if (useSupabaseRest()) {
+      const taken = await supabaseRows<{ id: string }>(`circles?code=eq.${code}&select=id`);
+      if (taken.length) continue;
+    }
+    return code;
   }
 }
 
