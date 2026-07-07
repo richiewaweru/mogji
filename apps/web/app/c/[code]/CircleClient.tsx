@@ -48,6 +48,7 @@ export default function CircleClient({ code }: { code: string }) {
   const [composer, setComposer] = useState(false);
   const [draft, setDraft] = useState<{ id: string; puzzleJson: PuzzleJson } | null>(null);
   const [prompts, setPrompts] = useState({ p1: "", p2: "", p3: "" });
+  const [composerNote, setComposerNote] = useState("");
   const [composerStartedAt, setComposerStartedAt] = useState<number>(0);
 
   const authHeaders = useMemo(() => (token ? { authorization: `Bearer ${token}` } : undefined), [token]);
@@ -114,13 +115,18 @@ export default function CircleClient({ code }: { code: string }) {
   }
 
   async function compose() {
+    setComposerNote("");
     const response = await fetch("/api/v1/decodes/compose", {
       method: "POST",
       headers: { "content-type": "application/json", ...(authHeaders ?? {}) },
-      body: JSON.stringify({ ...prompts, seconds: Math.round((Date.now() - composerStartedAt) / 1000) })
+      body: JSON.stringify({
+        ...prompts,
+        seconds: Math.round((Date.now() - composerStartedAt) / 1000),
+        previous_decode_id: draft?.id
+      })
     });
     const data = await response.json();
-    if (!response.ok) setError(data.error ?? "Could not compose.");
+    if (!response.ok) setComposerNote(data.error ?? "Could not compose. Try again in a moment.");
     else setDraft(data.decode);
   }
 
@@ -201,11 +207,12 @@ export default function CircleClient({ code }: { code: string }) {
           setPrompts={setPrompts}
           draft={draft}
           setDraft={setDraft}
+          note={composerNote}
           onCompose={compose}
           onPublish={publish}
           onDelete={deleteDraft}
           onStart={() => setComposerStartedAt(Date.now())}
-          onCancel={() => { void logClientEvent("composer_abandoned_at_step", { step: draft ? "review" : "prompts" }); setComposer(false); }}
+          onCancel={() => { void logClientEvent("composer_abandoned_at_step", { step: draft ? "review" : "prompts" }); setComposer(false); setComposerNote(""); }}
         />
       ) : (
         <>
@@ -334,6 +341,7 @@ function Composer(props: {
   setPrompts: (prompts: { p1: string; p2: string; p3: string }) => void;
   draft: { id: string; puzzleJson: PuzzleJson } | null;
   setDraft: (draft: { id: string; puzzleJson: PuzzleJson }) => void;
+  note: string;
   onCompose: () => void;
   onPublish: () => void;
   onDelete: () => void;
@@ -347,11 +355,77 @@ function Composer(props: {
   ];
 
   useEffect(() => props.onStart(), []);
+
+  const noteCallout = props.note ? (
+    <p className="mb-4 rounded-2xl border border-[var(--amber-ink)] bg-[var(--paper)] p-4 font-bold">{props.note}</p>
+  ) : null;
+
+  function updatePuzzle(mutate: (puzzle: PuzzleJson) => void) {
+    if (!props.draft) return;
+    const puzzle = JSON.parse(JSON.stringify(props.draft.puzzleJson)) as PuzzleJson;
+    mutate(puzzle);
+    props.setDraft({ ...props.draft, puzzleJson: puzzle });
+  }
+
   if (props.draft) {
     return (
       <section className="raised-surface">
         <h2 className="mb-2 text-2xl font-black">{props.draft.puzzleJson.title}</h2>
         <p className="mb-4 text-[var(--ink-muted)]">{props.draft.puzzleJson.setup}</p>
+        {noteCallout}
+        <div className="mb-4 grid gap-3">
+          {props.draft.puzzleJson.slots.map((slot, slotIndex) => (
+            <div key={slot.id} className="rounded-2xl border border-[var(--line)] bg-[var(--paper)] p-3">
+              <div className="mb-2 flex items-center justify-between text-sm font-bold text-[var(--meta)]">
+                <span>Slot {slotIndex + 1}</span>
+                <span>✅ truth · ↔️ close enough</span>
+              </div>
+              {slot.options.map((option, optionIndex) => {
+                const isExact = slot.answer.exact.includes(option.id);
+                const isAlternate = slot.answer.alternate?.includes(option.id) ?? false;
+                return (
+                  <div key={option.id} className="mb-2 flex items-center gap-2">
+                    <input
+                      aria-label={`Slot ${slotIndex + 1} option ${optionIndex + 1} emoji`}
+                      className="w-14 rounded-xl border border-[var(--line)] bg-[var(--paper-raised)] p-2 text-center text-xl"
+                      value={option.emoji}
+                      onChange={(event) => updatePuzzle((puzzle) => { puzzle.slots[slotIndex]!.options[optionIndex]!.emoji = event.target.value; })}
+                    />
+                    <input
+                      aria-label={`Slot ${slotIndex + 1} option ${optionIndex + 1} label`}
+                      className="min-w-0 flex-1 rounded-xl border border-[var(--line)] bg-[var(--paper-raised)] p-2 text-sm"
+                      value={option.label ?? ""}
+                      onChange={(event) => updatePuzzle((puzzle) => { puzzle.slots[slotIndex]!.options[optionIndex]!.label = event.target.value; })}
+                    />
+                    <button
+                      type="button"
+                      title="Mark as the truth"
+                      className={`rounded-xl border px-2 py-1 text-sm ${isExact ? "border-[var(--amber-ink)] bg-[var(--paper-raised)] font-black" : "border-[var(--line)] opacity-50"}`}
+                      onClick={() => updatePuzzle((puzzle) => {
+                        const target = puzzle.slots[slotIndex]!;
+                        target.answer.exact = [option.id];
+                        target.answer.alternate = (target.answer.alternate ?? []).filter((id) => id !== option.id);
+                      })}
+                    >✅</button>
+                    <button
+                      type="button"
+                      title="Toggle as a defensible read"
+                      className={`rounded-xl border px-2 py-1 text-sm ${isAlternate ? "border-[var(--amber-ink)] bg-[var(--paper-raised)] font-black" : "border-[var(--line)] opacity-50"}`}
+                      disabled={isExact}
+                      onClick={() => updatePuzzle((puzzle) => {
+                        const target = puzzle.slots[slotIndex]!;
+                        const alternate = target.answer.alternate ?? [];
+                        target.answer.alternate = alternate.includes(option.id)
+                          ? alternate.filter((id) => id !== option.id)
+                          : [...alternate, option.id];
+                      })}
+                    >↔️</button>
+                  </div>
+                );
+              })}
+            </div>
+          ))}
+        </div>
         <label className="mb-4 grid gap-2 font-bold">
           Author's cut
           <textarea className="min-h-24 rounded-2xl border border-[var(--line)] bg-[var(--paper)] p-4" value={props.draft.puzzleJson.authorCut} onChange={(event) => props.setDraft({ ...props.draft!, puzzleJson: { ...props.draft!.puzzleJson, authorCut: event.target.value } })} />
@@ -368,6 +442,7 @@ function Composer(props: {
   return (
     <section className="raised-surface">
       <h2 className="mb-4 text-2xl font-black">Set a decode</h2>
+      {noteCallout}
       {promptFields.map(([key, label]) => (
         <label key={key} className="mb-4 grid gap-2 font-bold">
           {label}

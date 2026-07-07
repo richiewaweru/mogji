@@ -119,17 +119,50 @@ export async function getCircleHome(code: string, token?: MemberToken | null) {
   };
 }
 
-export async function composeDraft(circleId: string, setterMemberId: string, input: { p1: string; p2: string; p3: string }) {
-  const blocked = moderate([input.p1, input.p2, input.p3].join(" "));
-  if (blocked) throw badRequest("This needs a gentler version. Keep it about consenting people in the circle.");
-  const draft = await generateDraft(input);
-  const outputBlocked = moderate(JSON.stringify(draft));
-  if (outputBlocked) throw badRequest("This draft came out sharper than Mogji allows. Try a warmer version.");
-  const stripped = stripForbiddenKeys(draft);
-  const validation = validatePuzzleJson(stripped);
-  if (!validation.ok) throw badRequest(validation.errors.join(" "));
+export async function composeDraft(
+  circleId: string,
+  setterMemberId: string,
+  input: { p1: string; p2: string; p3: string },
+  previousDecodeId?: string | null
+) {
   const db = await readDb();
-  const decode = createDecode(circleId, setterMemberId, validation.puzzle, "draft");
+  const previousDraft = previousDecodeId
+    ? db.decodes.find(
+        (row) =>
+          row.id === previousDecodeId &&
+          row.circleId === circleId &&
+          row.setterMemberId === setterMemberId &&
+          row.status === "draft"
+      )
+    : undefined;
+
+  let puzzle: PuzzleJson;
+  const provider = composerProvider();
+  if (provider === "local") {
+    if (moderate([input.p1, input.p2, input.p3].join(" "))) {
+      throw badRequest("This needs a gentler version. Keep it about your own moment, not someone else's.");
+    }
+    puzzle = buildDraft(input);
+  } else {
+    const result = await generateDraft(input, previousDraft?.puzzleJson);
+    if (result.kind === "blocked") {
+      db.events.push(event("composer_blocked", circleId, setterMemberId, { category: result.reason.slice(0, 140) }));
+      await writeDb(db);
+      throw badRequest(`${result.reason} ${result.suggestion}`.trim());
+    }
+    if (result.kind === "failed") {
+      if (moderate([input.p1, input.p2, input.p3].join(" "))) {
+        throw badRequest("This needs a gentler version. Keep it about your own moment, not someone else's.");
+      }
+      db.events.push(event("composer_fallback_local", circleId, setterMemberId, { detail: result.detail }));
+      puzzle = buildDraft(input);
+    } else {
+      puzzle = result.puzzle;
+    }
+  }
+
+  if (previousDraft) previousDraft.status = "deleted";
+  const decode = createDecode(circleId, setterMemberId, puzzle, "draft");
   db.decodes.push(decode);
   await writeDb(db);
   return decode;
@@ -374,31 +407,54 @@ async function closeExpired(dbPromise: Promise<Database>) {
   return db;
 }
 
-const composerSystemPrompt = "You build warm, teasing Mogji emoji-chain decodes for close friends. Return strict JSON only.";
+const composerSystemPrompt = `You are the Mogji composer. A friend (the setter) gives you a real moment from their week; you turn it into an emoji-chain decode their close circle plays to prove who reads them best.
 
-function composerUserPrompt(input: { p1: string; p2: string; p3: string }) {
-  return `Moment: ${input.p1}
+WHAT MAKES A GREAT DECODE
+- The setup speaks to the circle in second-person plural ("Kevin told you all...") and presents the moment so the assumption feels natural. It must NEVER reveal or hint at what really happened.
+- Exactly 3 slots. Each slot probes a DIFFERENT dimension of the moment — for example: where/what it looked like, the mood or motive underneath, the telling detail or next move. Never three rewordings of the same question.
+- Exactly 4 options per slot, each with a fitting emoji and a short punchy label (1-4 words). Every option must be genuinely plausible to someone who knows the setter — no throwaway filler.
+- Per slot: the TRUTH (what really happened) is the answer.exact option. The ASSUMPTION (what people would guess) is the most seductive wrong option. One option that is a defensible different read of the same truth goes in answer.alternate. The fourth is plausible but wrong.
+- authorCut is the reveal punchline: 15 words or fewer, shaped like "It looked like X. It was Y." It should make the group chat laugh.
+- Tone: teasing, warm, specific. The setter comes out looking interesting, never pathetic or exposed.
+
+SAFETY — WHEN TO REFUSE
+The rule of thumb: it is fine to decode yourself; it is not fine to expose someone else. Refuse when the input:
+- aims cruelty, mockery, or a callout at a third party
+- is sexual or explicit
+- puts a non-consenting person outside the circle on display
+- reveals someone else's private or sensitive situation (health, money, relationships, legal trouble)
+When refusing, return ONLY this JSON — nothing else:
+{"blocked": true, "reason": "<one plain sentence saying why, no lecture>", "suggestion": "<a specific rewrite of THEIR moment that keeps the funny part but centers the setter — phrased so they can use it directly>"}
+
+OUTPUT
+Return strict JSON only. Either the refusal object above, or a puzzle object with exactly these keys: version, format, source, title, setup, authorCut, slots. No markdown, no commentary, no strategy or reasoning fields.`;
+
+const composerExample = `EXAMPLE
+Input:
+Moment: I told the group I was five minutes away, then sent "omw"
+What people would assume: I was stuck in traffic
+What really happened: I was in the tub, completely at peace, and just sent another text
+
+Output:
+{"version":1,"format":"emoji_chain","source":"circle","title":"Omw (from the tub)","setup":"Kevin told you all he was five minutes away, then sent 'omw' with suspicious confidence. Decode what was really going on.","authorCut":"It looked like traffic. It was bathwater.","slots":[{"id":"location","options":[{"id":"traffic","emoji":"🚗","label":"traffic"},{"id":"tub","emoji":"🛁","label":"in the tub"},{"id":"bed","emoji":"🛌","label":"still in bed"},{"id":"shop","emoji":"🛒","label":"side quest"}],"answer":{"exact":["tub"],"alternate":["bed"]}},{"id":"energy","options":[{"id":"panic","emoji":"😬","label":"scrambling"},{"id":"zen","emoji":"😌","label":"peaceful"},{"id":"rage","emoji":"😤","label":"annoyed"},{"id":"asleep","emoji":"😴","label":"basically asleep"}],"answer":{"exact":["zen"],"alternate":["panic"]}},{"id":"move","options":[{"id":"sprint","emoji":"🏃","label":"sprint out"},{"id":"tea","emoji":"☕","label":"finish the tea"},{"id":"ghost","emoji":"🫥","label":"go quiet"},{"id":"text","emoji":"📱","label":"send another text"}],"answer":{"exact":["text"],"alternate":["tea"]}}]}
+
+Note how slot 1 asks WHERE he was, slot 2 asks the MOOD underneath, slot 3 asks the MOVE he made — three different dimensions, and the assumption (traffic/scrambling/sprint) is seductive in each.`;
+
+function composerUserPrompt(input: { p1: string; p2: string; p3: string }, previous?: PuzzleJson) {
+  const reshuffle = previous
+    ? `
+
+This setter already saw a draft and asked for a different take. Previous draft (do not repeat its angle, slot dimensions, or options — same truth, genuinely fresh read):
+${JSON.stringify(previous)}`
+    : "";
+  return `${composerExample}
+
+Now build a decode for this setter:
+Moment: ${input.p1}
 What people would assume: ${input.p2}
-What really happened: ${input.p3}
+What really happened: ${input.p3}${reshuffle}
 
-Build a clean playable puzzle_json object only:
-{
-  "version": 1,
-  "format": "emoji_chain",
-  "source": "circle",
-  "title": string,
-  "setup": string,
-  "authorCut": string,
-  "slots": [
-    {
-      "id": string,
-      "options": [{"id": string, "emoji": string, "label": string}],
-      "answer": {"exact": [string], "alternate": [string]}
-    }
-  ]
-}
-
-Rules: setup is second-person plural and must not reveal what really happened. Exactly 3 slots. Exactly 4 options per slot. The assumption should be a seductive wrong option. The truth should be exact. authorCut is 15 words or fewer and follows "It looked like X. It was Y." Tone is teasing, warm, never humiliating. Do not include strategy, reasoning, metadata, composer inputs, or any non-playable fields.`;
+Return the JSON only.`;
 }
 
 type ComposerProvider = "anthropic" | "openai" | "local";
@@ -411,16 +467,35 @@ function composerProvider(): ComposerProvider {
   return "local";
 }
 
-function parsePuzzleText(text: string): PuzzleJson | null {
+type DraftResult =
+  | { kind: "puzzle"; puzzle: PuzzleJson }
+  | { kind: "blocked"; reason: string; suggestion: string }
+  | { kind: "failed"; detail: string };
+
+type ParsedComposerText = DraftResult | { kind: "invalid"; errors: string[] };
+
+function parseComposerText(text: string): ParsedComposerText {
   const jsonText = text.match(/\{[\s\S]*\}/)?.[0] ?? text;
+  let parsed: unknown;
   try {
-    return JSON.parse(jsonText) as PuzzleJson;
+    parsed = JSON.parse(jsonText);
   } catch {
-    return null;
+    return { kind: "invalid", errors: ["Response was not valid JSON."] };
   }
+  const refusal = parsed as { blocked?: boolean; reason?: string; suggestion?: string };
+  if (refusal.blocked === true) {
+    return {
+      kind: "blocked",
+      reason: String(refusal.reason || "This one is not a fit for Mogji."),
+      suggestion: String(refusal.suggestion || "Try a version about your own reaction to the moment.")
+    };
+  }
+  const validation = validatePuzzleJson(stripForbiddenKeys(parsed));
+  if (!validation.ok) return { kind: "invalid", errors: validation.errors };
+  return { kind: "puzzle", puzzle: validation.puzzle };
 }
 
-async function anthropicDraft(input: { p1: string; p2: string; p3: string }): Promise<PuzzleJson | null> {
+async function anthropicText(userPrompt: string): Promise<string | null> {
   if (!process.env.ANTHROPIC_API_KEY) return null;
   const response = await fetch("https://api.anthropic.com/v1/messages", {
     method: "POST",
@@ -432,17 +507,16 @@ async function anthropicDraft(input: { p1: string; p2: string; p3: string }): Pr
     body: JSON.stringify({
       model: process.env.ANTHROPIC_MODEL || "claude-sonnet-5",
       max_tokens: 1600,
-      temperature: 0.8,
       system: composerSystemPrompt,
-      messages: [{ role: "user", content: composerUserPrompt(input) }]
+      messages: [{ role: "user", content: userPrompt }]
     })
   });
-  if (!response.ok) return null;
+  if (!response.ok) throw new Error(`anthropic ${response.status}: ${(await response.text()).slice(0, 200)}`);
   const data = (await response.json()) as { content?: Array<{ type: string; text?: string }> };
-  return parsePuzzleText(data.content?.find((part) => part.type === "text")?.text ?? "");
+  return data.content?.find((part) => part.type === "text")?.text ?? null;
 }
 
-async function openAiDraft(input: { p1: string; p2: string; p3: string }): Promise<PuzzleJson | null> {
+async function openAiText(userPrompt: string): Promise<string | null> {
   if (!process.env.OPENAI_API_KEY) return null;
   // Accept either a base URL (https://api.deepseek.com/v1) or a full
   // endpoint URL pasted from provider docs (.../chat/completions).
@@ -460,24 +534,41 @@ async function openAiDraft(input: { p1: string; p2: string; p3: string }): Promi
       temperature: 0.8,
       messages: [
         { role: "system", content: composerSystemPrompt },
-        { role: "user", content: composerUserPrompt(input) }
+        { role: "user", content: userPrompt }
       ]
     })
   });
-  if (!response.ok) return null;
+  if (!response.ok) throw new Error(`openai ${response.status}: ${(await response.text()).slice(0, 200)}`);
   const data = (await response.json()) as { choices?: Array<{ message?: { content?: string } }> };
-  return parsePuzzleText(data.choices?.[0]?.message?.content ?? "");
+  return data.choices?.[0]?.message?.content ?? null;
 }
 
-async function generateDraft(input: { p1: string; p2: string; p3: string }): Promise<PuzzleJson> {
+async function callComposerModel(userPrompt: string): Promise<string | null> {
   const provider = composerProvider();
+  if (provider === "anthropic") return anthropicText(userPrompt);
+  if (provider === "openai") return openAiText(userPrompt);
+  return null;
+}
+
+async function generateDraft(input: { p1: string; p2: string; p3: string }, previous?: PuzzleJson): Promise<DraftResult> {
   try {
-    if (provider === "anthropic") return (await anthropicDraft(input)) ?? buildDraft(input);
-    if (provider === "openai") return (await openAiDraft(input)) ?? buildDraft(input);
-  } catch {
-    return buildDraft(input);
+    const prompt = composerUserPrompt(input, previous);
+    const firstText = await callComposerModel(prompt);
+    if (!firstText) return { kind: "failed", detail: "empty model response" };
+    const first = parseComposerText(firstText);
+    if (first.kind !== "invalid") return first;
+
+    const retryText = await callComposerModel(
+      `${prompt}
+
+Your previous attempt failed validation: ${first.errors.join(" ")} Return corrected JSON only.`
+    );
+    if (!retryText) return { kind: "failed", detail: "empty model response on retry" };
+    const retry = parseComposerText(retryText);
+    return retry.kind === "invalid" ? { kind: "failed", detail: `invalid after retry: ${retry.errors.join(" ").slice(0, 200)}` } : retry;
+  } catch (error) {
+    return { kind: "failed", detail: String(error instanceof Error ? error.message : error).slice(0, 240) };
   }
-  return buildDraft(input);
 }
 
 function buildDraft(input: { p1: string; p2: string; p3: string }): PuzzleJson {
@@ -765,8 +856,10 @@ function nextSetter(db: Database, circleId: string) {
   return members[(setterIndex + 1) % members.length] ?? members[0] ?? null;
 }
 
+// Coarse guard for the local-template path only; LLM paths self-screen
+// via the composer system prompt's safety policy.
 function moderate(text: string) {
-  return /\b(sex|nude|kill|hate|humiliate)\b/i.test(text);
+  return /\b(sex|sexual|nude|nudes|naked|porn|kill|hate|humiliate|slut|whore|affair|cheating on)\b/i.test(text);
 }
 
 function requireMember(token: MemberToken, circleId: string) {
