@@ -84,7 +84,7 @@ export async function createCircle(input: { name: string; vibeEmoji: string; dis
 export async function joinCircle(code: string, displayName: string, existingToken?: MemberToken | null, viaShareCard = false) {
   const db = await readDb({ kind: "circleCode", code });
   const circle = findCircle(db, code);
-  if (!circle) throw notFound("Circle not found.");
+  if (!circle) throw notFound("We couldn't find that circle. Double-check the invite link — the code is the six characters at the end.");
   const existing = existingToken?.circleId === circle.id ? db.members.find((member) => member.id === existingToken.memberId) : null;
   if (existing) return { circle, member: existing, memberToken: signMemberToken(tokenPayload(existing)) };
   const member = createMember(circle.id, displayName);
@@ -98,7 +98,7 @@ export async function joinCircle(code: string, displayName: string, existingToke
 export async function getCircleHome(code: string, token?: MemberToken | null) {
   const db = await closeExpired(readDb({ kind: "circleCode", code }));
   const circle = findCircle(db, code);
-  if (!circle) throw notFound("Circle not found.");
+  if (!circle) throw notFound("We couldn't find that circle. Double-check the invite link — the code is the six characters at the end.");
   const member = token?.circleId === circle.id ? db.members.find((row) => row.id === token.memberId) ?? null : null;
   const members = db.members.filter((row) => row.circleId === circle.id).sort((a, b) => Date.parse(a.joinedAt) - Date.parse(b.joinedAt));
   const live = db.decodes.find((decode) => decode.circleId === circle.id && decode.status === "live") ?? null;
@@ -171,11 +171,11 @@ export async function composeDraft(
 export async function publishDecode(memberToken: MemberToken, decodeId: string, puzzle?: PuzzleJson) {
   const db = await readDb({ kind: "decodeId", decodeId });
   const decode = db.decodes.find((row) => row.id === decodeId);
-  if (!decode) throw notFound("Decode not found.");
+  if (!decode) throw notFound("That decode doesn't exist anymore — it may have been deleted by its setter.");
   requireMember(memberToken, decode.circleId);
-  if (decode.setterMemberId !== memberToken.memberId) throw forbidden("Only the setter can publish this decode.");
+  if (decode.setterMemberId !== memberToken.memberId) throw forbidden("Only the person who wrote this decode can send it.");
   if (db.decodes.some((row) => row.circleId === decode.circleId && row.status === "live")) {
-    throw badRequest("This circle already has a live decode.");
+    throw badRequest("Your circle already has a decode in play — one at a time keeps the reveal special. Your draft is saved; send it once the current round is revealed.");
   }
   if (puzzle) {
     const validation = validatePuzzleJson(stripForbiddenKeys(puzzle));
@@ -194,14 +194,14 @@ export async function publishDecode(memberToken: MemberToken, decodeId: string, 
 export async function answerDecode(memberToken: MemberToken, decodeId: string, chain: string[], predictionMemberId?: string | null) {
   const db = await readDb({ kind: "decodeId", decodeId });
   const decode = db.decodes.find((row) => row.id === decodeId);
-  if (!decode) throw notFound("Decode not found.");
+  if (!decode) throw notFound("That decode doesn't exist anymore — it may have been deleted by its setter.");
   requireMember(memberToken, decode.circleId);
-  if (decode.status !== "live") throw badRequest("This decode is not live.");
-  if (decode.setterMemberId === memberToken.memberId) throw badRequest("The setter cannot answer their own decode.");
+  if (decode.status !== "live") throw badRequest("This round has already closed. Check the reveal to see how everyone read it.");
+  if (decode.setterMemberId === memberToken.memberId) throw badRequest("You set this one — you already know the truth. Sit back and watch your circle guess.");
   if (db.answers.some((answer) => answer.decodeId === decodeId && answer.memberId === memberToken.memberId)) {
-    throw badRequest("One shot. No edits.");
+    throw badRequest("You already answered this one. One shot, no edits — the reveal will show how you did.");
   }
-  if (chain.length !== decode.puzzleJson.slots.length) throw badRequest("Complete the chain before submitting.");
+  if (chain.length !== decode.puzzleJson.slots.length) throw badRequest("Pick an emoji for every slot before submitting.");
   db.answers.push({ decodeId, memberId: memberToken.memberId, chain, predictionMemberId: predictionMemberId ?? null, createdAt: now() });
   db.events.push(event("answer_submitted", decode.circleId, memberToken.memberId, { decodeId }));
   await writeDb(db);
@@ -211,11 +211,11 @@ export async function answerDecode(memberToken: MemberToken, decodeId: string, c
 export async function closeDecode(memberToken: MemberToken, decodeId: string, automated = false) {
   const db = await readDb({ kind: "decodeId", decodeId });
   const decode = db.decodes.find((row) => row.id === decodeId);
-  if (!decode) throw notFound("Decode not found.");
+  if (!decode) throw notFound("That decode doesn't exist anymore — it may have been deleted by its setter.");
   requireMember(memberToken, decode.circleId);
-  if (!automated && decode.setterMemberId !== memberToken.memberId) throw forbidden("Only the setter can close this decode.");
+  if (!automated && decode.setterMemberId !== memberToken.memberId) throw forbidden("Only the setter can reveal this round early — otherwise it closes on its own at 48 hours.");
   const answerCount = db.answers.filter((answer) => answer.decodeId === decodeId).length;
-  if (!automated && answerCount < 1) throw badRequest("At least one reader needs to answer before an early reveal.");
+  if (!automated && answerCount < 1) throw badRequest("Nobody has answered yet, so there's nothing to reveal. Give the circle a nudge — the round also closes on its own at 48 hours.");
   revealDecode(db, decode);
   await writeDb(db);
   return revealPayload(decode, db);
@@ -224,9 +224,9 @@ export async function closeDecode(memberToken: MemberToken, decodeId: string, au
 export async function getReveal(memberToken: MemberToken, decodeId: string) {
   const db = await readDb({ kind: "decodeId", decodeId });
   const decode = db.decodes.find((row) => row.id === decodeId);
-  if (!decode) throw notFound("Decode not found.");
+  if (!decode) throw notFound("That decode doesn't exist anymore — it may have been deleted by its setter.");
   requireMember(memberToken, decode.circleId);
-  if (decode.status !== "revealed") throw badRequest("The reveal is not open yet.");
+  if (decode.status !== "revealed") throw badRequest("The reveal isn't open yet — it drops when the round closes.");
   db.events.push(event("reveal_viewed", decode.circleId, memberToken.memberId, { decodeId }));
   await writeDb(db);
   return revealPayload(decode, db);
@@ -235,10 +235,10 @@ export async function getReveal(memberToken: MemberToken, decodeId: string) {
 export async function deleteDecode(memberToken: MemberToken, decodeId: string) {
   const db = await readDb({ kind: "decodeId", decodeId });
   const decode = db.decodes.find((row) => row.id === decodeId);
-  if (!decode) throw notFound("Decode not found.");
+  if (!decode) throw notFound("That decode doesn't exist anymore — it may have been deleted by its setter.");
   requireMember(memberToken, decode.circleId);
-  if (decode.setterMemberId !== memberToken.memberId) throw forbidden("Only the setter can delete this decode.");
-  if (decode.status === "revealed") throw badRequest("Revealed decodes stay in history.");
+  if (decode.setterMemberId !== memberToken.memberId) throw forbidden("Only the person who set this decode can delete it.");
+  if (decode.status === "revealed") throw badRequest("This one has already been revealed, so it stays in the circle's history.");
   decode.status = "deleted";
   await writeDb(db);
   return { ok: true };
@@ -284,7 +284,7 @@ export async function closeExpiredDecodes() {
 export async function shareCardPayload(decodeId: string) {
   const db = await readDb({ kind: "decodeId", decodeId });
   const decode = db.decodes.find((row) => row.id === decodeId);
-  if (!decode) throw notFound("Decode not found.");
+  if (!decode) throw notFound("That decode doesn't exist anymore — it may have been deleted by its setter.");
   if (decode.status !== "revealed") throw badRequest("Share cards are generated after reveal.");
   const payload = revealPayload(decode, db);
   db.events.push(event("sharecard_generated", decode.circleId, null, { decodeId }));
@@ -955,7 +955,7 @@ function moderate(text: string) {
 }
 
 function requireMember(token: MemberToken, circleId: string) {
-  if (token.circleId !== circleId) throw forbidden("This token does not belong to the circle.");
+  if (token.circleId !== circleId) throw forbidden("You're not a member of this circle on this device. Open the invite link to join first.");
 }
 
 function notFound(message: string) {

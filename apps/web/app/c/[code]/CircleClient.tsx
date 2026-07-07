@@ -88,6 +88,7 @@ export default function CircleClient({ code }: { code: string }) {
 
   async function submitAnswer() {
     if (!home?.liveDecode) return;
+    setError("");
     const response = await fetch(`/api/v1/decodes/${home.liveDecode.id}/answer`, {
       method: "POST",
       headers: { "content-type": "application/json", ...(authHeaders ?? {}) },
@@ -100,6 +101,7 @@ export default function CircleClient({ code }: { code: string }) {
 
   async function closeDecode() {
     if (!home?.liveDecode) return;
+    setError("");
     const response = await fetch(`/api/v1/decodes/${home.liveDecode.id}/close`, { method: "POST", headers: authHeaders });
     const data = await response.json();
     if (!response.ok) setError(data.error ?? "Could not reveal yet.");
@@ -108,6 +110,7 @@ export default function CircleClient({ code }: { code: string }) {
   }
 
   async function openReveal(id: string) {
+    setError("");
     const response = await fetch(`/api/v1/decodes/${id}/reveal`, { headers: authHeaders });
     const data = await response.json();
     if (!response.ok) setError(data.error ?? "Reveal is not ready.");
@@ -140,16 +143,18 @@ export default function CircleClient({ code }: { code: string }) {
 
   async function publish() {
     if (!draft) return;
+    setComposerNote("");
     const response = await fetch("/api/v1/decodes", {
       method: "POST",
       headers: { "content-type": "application/json", ...(authHeaders ?? {}) },
       body: JSON.stringify({ decode_id: draft.id, puzzle: draft.puzzleJson })
     });
     const data = await response.json();
-    if (!response.ok) setError(data.error ?? "Could not publish.");
+    if (!response.ok) setComposerNote(data.error ?? "Could not send this decode. Try again in a moment.");
     else {
       setComposer(false);
       setDraft(null);
+      setComposerNote("");
       await loadHome();
     }
   }
@@ -247,7 +252,9 @@ export default function CircleClient({ code }: { code: string }) {
           <section className="mb-5">
             <div className="mb-3 flex items-center justify-between">
               <h2 className="text-xl font-black">Circle table</h2>
-              <button className="secondary-button" onClick={() => { setComposer(true); setComposerStartedAt(Date.now()); void logClientEvent("composer_opened"); }}><span aria-hidden="true">✦</span> Compose</button>
+              {live ? null : (
+                <button className="secondary-button" onClick={() => { setComposer(true); setComposerStartedAt(Date.now()); void logClientEvent("composer_opened"); }}><span aria-hidden="true">✦</span> Compose</button>
+              )}
             </div>
             <div className="grid gap-2">
               {home.table.map((row, index) => (
