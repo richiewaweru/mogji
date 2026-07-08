@@ -6,14 +6,23 @@ export async function generateMetadata({ params }: { params: Promise<{ code: str
   const { code } = await params;
   try {
     const home = await getCircleHome(code, null);
+    const title = `${home.circle.vibeEmoji} ${home.circle.name}`;
+    const description = "🔥 We're playing Mogji — one of us sets an emoji riddle about their real life, the rest decode it. Think you can read us?";
     return {
-      title: `${home.circle.vibeEmoji} ${home.circle.name} on Mogji`,
-      description: "Join the circle and decode the group chat.",
+      title: `${title} on Mogji`,
+      description,
       openGraph: {
-        title: `${home.circle.vibeEmoji} ${home.circle.name}`,
-        description: "Who reads the group best?",
+        title,
+        description,
         url: `/c/${code}`,
-        siteName: "Mogji Circles"
+        siteName: "Mogji Circles",
+        images: [{ url: `/api/v1/circles/${code}/invite.png`, width: 1200, height: 630 }]
+      },
+      twitter: {
+        card: "summary_large_image",
+        title,
+        description,
+        images: [`/api/v1/circles/${code}/invite.png`]
       }
     };
   } catch {

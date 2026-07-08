@@ -16,6 +16,7 @@ type HomePayload = {
     puzzle: PublicPuzzleJson;
   };
   lastReveal: RevealPayload | null;
+  history: { id: string; title: string; setterName: string; crownName: string | null; closedAt: string }[];
   nextSetter: { id: string; displayName: string } | null;
   table: { memberId: string; displayName: string; xp: number; crowns: number; hardestToRead: string; streak: number }[];
   daily: PublicPuzzleJson;
@@ -50,6 +51,7 @@ export default function CircleClient({ code }: { code: string }) {
   const [prompts, setPrompts] = useState({ p1: "", p2: "", p3: "" });
   const [composerNote, setComposerNote] = useState("");
   const [composerStartedAt, setComposerStartedAt] = useState<number>(0);
+  const [inviteState, setInviteState] = useState<"idle" | "copied">("idle");
 
   const authHeaders = useMemo(() => (token ? { authorization: `Bearer ${token}` } : undefined), [token]);
 
@@ -70,12 +72,16 @@ export default function CircleClient({ code }: { code: string }) {
     if (response.ok) setHome(data);
   }
 
-  async function join() {
+  async function join(rejoinMemberId?: string) {
     setError("");
     const response = await fetch(`/api/v1/circles/${code}/join`, {
       method: "POST",
       headers: { "content-type": "application/json", ...(authHeaders ?? {}) },
-      body: JSON.stringify({ display_name: name, via_sharecard: new URLSearchParams(window.location.search).get("from") === "sharecard" })
+      body: JSON.stringify({
+        display_name: name,
+        via_sharecard: new URLSearchParams(window.location.search).get("from") === "sharecard",
+        rejoin_member_id: rejoinMemberId
+      })
     });
     const data = await response.json();
     if (!response.ok) {
@@ -84,6 +90,27 @@ export default function CircleClient({ code }: { code: string }) {
     }
     localStorage.setItem(`mogji:${code}:token`, data.member_token);
     setToken(data.member_token);
+  }
+
+  async function inviteCircle() {
+    if (!home) return;
+    const url = `${window.location.origin}/c/${code}`;
+    const text = `🔥 We're playing Mogji — one of us sets an emoji riddle about their real life, the rest decode it. Think you can read us?`;
+    if (navigator.share) {
+      try {
+        await navigator.share({ title: home.circle.name, text, url });
+        return;
+      } catch {
+        // user cancelled or share failed; fall through to copy
+      }
+    }
+    try {
+      await navigator.clipboard.writeText(`${text} ${url}`);
+      setInviteState("copied");
+      setTimeout(() => setInviteState("idle"), 2500);
+    } catch {
+      window.open(url, "_blank");
+    }
   }
 
   async function submitAnswer() {
@@ -175,9 +202,20 @@ export default function CircleClient({ code }: { code: string }) {
         <div className="text-6xl">{home.circle.vibeEmoji}</div>
         <h1 className="mt-5 text-4xl font-black">{home.circle.name}</h1>
         <p className="mb-7 mt-2 text-[var(--ink-muted)]">Join in one step. No account, no password.</p>
+        {home.members.length > 0 ? (
+          <div className="mb-7">
+            <p className="mb-3 font-bold">Already in this circle? Tap your name.</p>
+            <div className="flex flex-wrap gap-2">
+              {home.members.map((member) => (
+                <button key={member.id} className="secondary-button" onClick={() => join(member.id)}>{member.displayName}</button>
+              ))}
+            </div>
+          </div>
+        ) : null}
+        <p className="mb-3 font-bold">New here?</p>
         <input className="mb-4 min-h-12 w-full rounded-2xl border border-[var(--line)] bg-[var(--paper-raised)] px-4" placeholder="Display name" value={name} onChange={(event) => setName(event.target.value)} />
         {error ? <ErrorLine message={error} /> : null}
-        <button className="primary-button" onClick={join}>Join circle</button>
+        <button className="primary-button" onClick={() => join()}>Join circle</button>
       </Shell>
     );
   }
@@ -193,14 +231,15 @@ export default function CircleClient({ code }: { code: string }) {
           <div className="text-sm font-bold text-[var(--amber-ink)]">Mogji Circles</div>
           <h1 className="text-3xl font-black">{home.circle.vibeEmoji} {home.circle.name}</h1>
         </div>
-        <button
-          title="Copy invite"
-          className="icon-button"
-          onClick={() => navigator.clipboard.writeText(`${location.origin}/c/${code}`)}
-        >
-          <span aria-hidden="true">↗</span>
+        <button title="Invite your circle" className="secondary-button" onClick={inviteCircle}>
+          <span aria-hidden="true">↗</span> {inviteState === "copied" ? "Copied!" : "Invite"}
         </button>
       </header>
+      {inviteState === "copied" ? (
+        <p className="mb-4 rounded-2xl border border-[var(--line)] bg-[var(--paper-raised)] p-3 text-sm font-bold">
+          Invite copied — paste it in the chat: {location.origin}/c/{code}
+        </p>
+      ) : null}
 
       {error ? <ErrorLine message={error} /> : null}
 
@@ -269,11 +308,27 @@ export default function CircleClient({ code }: { code: string }) {
             </div>
           </section>
 
-          {home.lastReveal ? (
+          {home.history.length > 0 ? (
             <section className="mb-5 rounded-2xl border border-[var(--line)] bg-[var(--paper-raised)] p-4">
-              <div className="mb-1 text-sm font-bold text-[var(--amber-ink)]">Last reveal</div>
-              <h2 className="mb-3 text-xl font-black">{home.lastReveal.decode.puzzle.title}</h2>
-              <button className="secondary-button" onClick={() => openReveal(home.lastReveal!.decode.id)}><span aria-hidden="true">👑</span> View reveal</button>
+              <div className="mb-1 text-sm font-bold text-[var(--amber-ink)]">Past reveals</div>
+              <h2 className="mb-3 text-xl font-black">{home.history[0]!.title}</h2>
+              <button className="primary-button mb-3" onClick={() => openReveal(home.history[0]!.id)}><span aria-hidden="true">👑</span> View reveal</button>
+              {home.history.length > 1 ? (
+                <div className="grid gap-2">
+                  {home.history.slice(1).map((entry) => (
+                    <button
+                      key={entry.id}
+                      className="table-row text-left"
+                      onClick={() => openReveal(entry.id)}
+                    >
+                      <span className="font-bold">{entry.title}</span>
+                      <span className="text-sm text-[var(--ink-muted)]">set by {entry.setterName}</span>
+                      <span className="text-sm font-black text-[var(--meta)]">{entry.crownName ? `👑 ${entry.crownName}` : "no crown"}</span>
+                      <span className="text-sm text-[var(--ink-muted)]">{new Date(entry.closedAt).toLocaleDateString()}</span>
+                    </button>
+                  ))}
+                </div>
+              ) : null}
             </section>
           ) : null}
 

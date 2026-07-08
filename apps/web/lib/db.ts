@@ -81,13 +81,38 @@ export async function createCircle(input: { name: string; vibeEmoji: string; dis
   return { circle, member, memberToken: signMemberToken(tokenPayload(member)) };
 }
 
-export async function joinCircle(code: string, displayName: string, existingToken?: MemberToken | null, viaShareCard = false) {
+export async function joinCircle(
+  code: string,
+  displayName: string,
+  existingToken?: MemberToken | null,
+  viaShareCard = false,
+  rejoinMemberId?: string | null
+) {
   const db = await readDb({ kind: "circleCode", code });
   const circle = findCircle(db, code);
   if (!circle) throw notFound("We couldn't find that circle. Double-check the invite link — the code is the six characters at the end.");
   const existing = existingToken?.circleId === circle.id ? db.members.find((member) => member.id === existingToken.memberId) : null;
   if (existing) return { circle, member: existing, memberToken: signMemberToken(tokenPayload(existing)) };
-  const member = createMember(circle.id, displayName);
+
+  if (rejoinMemberId) {
+    const member = db.members.find((row) => row.id === rejoinMemberId && row.circleId === circle.id);
+    if (!member) throw notFound("That member wasn't found in this circle. Pick your name again or join as someone new.");
+    db.events.push(event("member_rejoined", circle.id, member.id, {}));
+    await writeDb(db);
+    return { circle, member, memberToken: signMemberToken(tokenPayload(member)) };
+  }
+
+  const normalized = displayName.trim().replace(/\s+/g, " ") || "Someone";
+  const collision = db.members.find(
+    (row) => row.circleId === circle.id && row.displayName.toLowerCase() === normalized.toLowerCase()
+  );
+  if (collision) {
+    throw badRequest(
+      `Someone in this circle is already called "${collision.displayName}". If that's you, tap your name on the join screen — otherwise pick another name.`
+    );
+  }
+
+  const member = createMember(circle.id, normalized);
   db.members.push(member);
   db.events.push(event("member_joined", circle.id, member.id, { via: "link" }));
   if (viaShareCard) db.events.push(event("joined_via_sharecard", circle.id, member.id, { code: circle.code }));
@@ -102,10 +127,23 @@ export async function getCircleHome(code: string, token?: MemberToken | null) {
   const member = token?.circleId === circle.id ? db.members.find((row) => row.id === token.memberId) ?? null : null;
   const members = db.members.filter((row) => row.circleId === circle.id).sort((a, b) => Date.parse(a.joinedAt) - Date.parse(b.joinedAt));
   const live = db.decodes.find((decode) => decode.circleId === circle.id && decode.status === "live") ?? null;
-  const lastReveal = db.decodes
+  const revealedDecodes = db.decodes
     .filter((decode) => decode.circleId === circle.id && decode.status === "revealed")
-    .sort((a, b) => Date.parse(b.createdAt) - Date.parse(a.createdAt))[0] ?? null;
+    .sort((a, b) => Date.parse(b.createdAt) - Date.parse(a.createdAt));
+  const lastReveal = revealedDecodes[0] ?? null;
   const table = buildCircleTable(db, circle.id);
+  const history = revealedDecodes.map((decode) => {
+    if (!decode.reveal) revealDecode(db, decode);
+    const setter = db.members.find((row) => row.id === decode.setterMemberId);
+    const crown = decode.reveal?.readers.find((reader) => reader.crown);
+    return {
+      id: decode.id,
+      title: decode.puzzleJson.title,
+      setterName: setter?.displayName ?? "Someone",
+      crownName: crown?.displayName ?? null,
+      closedAt: decode.closesAt ?? decode.createdAt
+    };
+  });
   await writeDb(db);
   return {
     circle,
@@ -113,6 +151,7 @@ export async function getCircleHome(code: string, token?: MemberToken | null) {
     members,
     liveDecode: live ? sanitizeDecode(live, db, member?.id ?? null) : null,
     lastReveal: lastReveal ? revealPayload(lastReveal, db) : null,
+    history,
     nextSetter: live ? null : nextSetter(db, circle.id),
     table,
     daily: publicPuzzle(dailyWarmup)
@@ -304,6 +343,16 @@ export async function getShareInfo(decodeId: string) {
     circleName: circle.name,
     vibeEmoji: circle.vibeEmoji
   };
+}
+
+// Lightweight read for the circle invite OG image — no event logging,
+// since link-preview crawlers hit this on every unfurl.
+export async function getInviteInfo(code: string) {
+  const db = await readDb({ kind: "circleCode", code });
+  const circle = findCircle(db, code);
+  if (!circle) throw notFound("We couldn't find that circle. Double-check the invite link — the code is the six characters at the end.");
+  const memberCount = db.members.filter((row) => row.circleId === circle.id).length;
+  return { name: circle.name, vibeEmoji: circle.vibeEmoji, code: circle.code, memberCount };
 }
 
 export async function shareCardPayload(decodeId: string) {
