@@ -81,26 +81,12 @@ export async function createCircle(input: { name: string; vibeEmoji: string; dis
   return { circle, member, memberToken: signMemberToken(tokenPayload(member)) };
 }
 
-export async function joinCircle(
-  code: string,
-  displayName: string,
-  existingToken?: MemberToken | null,
-  viaShareCard = false,
-  rejoinMemberId?: string | null
-) {
+export async function joinCircle(code: string, displayName: string, existingToken?: MemberToken | null, viaShareCard = false) {
   const db = await readDb({ kind: "circleCode", code });
   const circle = findCircle(db, code);
   if (!circle) throw notFound("We couldn't find that circle. Double-check the invite link — the code is the six characters at the end.");
   const existing = existingToken?.circleId === circle.id ? db.members.find((member) => member.id === existingToken.memberId) : null;
   if (existing) return { circle, member: existing, memberToken: signMemberToken(tokenPayload(existing)) };
-
-  if (rejoinMemberId) {
-    const member = db.members.find((row) => row.id === rejoinMemberId && row.circleId === circle.id);
-    if (!member) throw notFound("That member wasn't found in this circle. Pick your name again or join as someone new.");
-    db.events.push(event("member_rejoined", circle.id, member.id, {}));
-    await writeDb(db);
-    return { circle, member, memberToken: signMemberToken(tokenPayload(member)) };
-  }
 
   const normalized = displayName.trim().replace(/\s+/g, " ") || "Someone";
   const collision = db.members.find(
@@ -108,7 +94,7 @@ export async function joinCircle(
   );
   if (collision) {
     throw badRequest(
-      `Someone in this circle is already called "${collision.displayName}". If that's you, tap your name on the join screen — otherwise pick another name.`
+      `Someone in this circle is already called "${collision.displayName}". If that's you, use your resume link to get back in — otherwise pick another name.`
     );
   }
 

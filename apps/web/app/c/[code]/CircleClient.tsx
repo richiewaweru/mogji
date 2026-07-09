@@ -52,10 +52,23 @@ export default function CircleClient({ code }: { code: string }) {
   const [composerNote, setComposerNote] = useState("");
   const [composerStartedAt, setComposerStartedAt] = useState<number>(0);
   const [inviteState, setInviteState] = useState<"idle" | "copied">("idle");
+  const [resumeState, setResumeState] = useState<"idle" | "copied">("idle");
+  const [justJoined, setJustJoined] = useState(false);
+  const [resumeBannerDismissed, setResumeBannerDismissed] = useState(false);
 
   const authHeaders = useMemo(() => (token ? { authorization: `Bearer ${token}` } : undefined), [token]);
 
   useEffect(() => {
+    const params = new URLSearchParams(window.location.search);
+    const linkToken = params.get("token");
+    if (linkToken) {
+      localStorage.setItem(`mogji:${code}:token`, linkToken);
+      setToken(linkToken);
+      params.delete("token");
+      const query = params.toString();
+      window.history.replaceState(null, "", `${window.location.pathname}${query ? `?${query}` : ""}`);
+      return;
+    }
     const saved = localStorage.getItem(`mogji:${code}:token`);
     setToken(saved);
   }, [code]);
@@ -72,15 +85,14 @@ export default function CircleClient({ code }: { code: string }) {
     if (response.ok) setHome(data);
   }
 
-  async function join(rejoinMemberId?: string) {
+  async function join() {
     setError("");
     const response = await fetch(`/api/v1/circles/${code}/join`, {
       method: "POST",
       headers: { "content-type": "application/json", ...(authHeaders ?? {}) },
       body: JSON.stringify({
         display_name: name,
-        via_sharecard: new URLSearchParams(window.location.search).get("from") === "sharecard",
-        rejoin_member_id: rejoinMemberId
+        via_sharecard: new URLSearchParams(window.location.search).get("from") === "sharecard"
       })
     });
     const data = await response.json();
@@ -90,6 +102,19 @@ export default function CircleClient({ code }: { code: string }) {
     }
     localStorage.setItem(`mogji:${code}:token`, data.member_token);
     setToken(data.member_token);
+    setJustJoined(true);
+  }
+
+  async function copyResumeLink() {
+    if (!token) return;
+    const url = `${window.location.origin}/c/${code}?token=${token}`;
+    try {
+      await navigator.clipboard.writeText(url);
+      setResumeState("copied");
+      setTimeout(() => setResumeState("idle"), 2500);
+    } catch {
+      window.prompt("Copy your private resume link:", url);
+    }
   }
 
   async function inviteCircle() {
@@ -202,20 +227,10 @@ export default function CircleClient({ code }: { code: string }) {
         <div className="text-6xl">{home.circle.vibeEmoji}</div>
         <h1 className="mt-5 text-4xl font-black">{home.circle.name}</h1>
         <p className="mb-7 mt-2 text-[var(--ink-muted)]">Join in one step. No account, no password.</p>
-        {home.members.length > 0 ? (
-          <div className="mb-7">
-            <p className="mb-3 font-bold">Already in this circle? Tap your name.</p>
-            <div className="flex flex-wrap gap-2">
-              {home.members.map((member) => (
-                <button key={member.id} className="secondary-button" onClick={() => join(member.id)}>{member.displayName}</button>
-              ))}
-            </div>
-          </div>
-        ) : null}
-        <p className="mb-3 font-bold">New here?</p>
         <input className="mb-4 min-h-12 w-full rounded-2xl border border-[var(--line)] bg-[var(--paper-raised)] px-4" placeholder="Display name" value={name} onChange={(event) => setName(event.target.value)} />
         {error ? <ErrorLine message={error} /> : null}
         <button className="primary-button" onClick={() => join()}>Join circle</button>
+        <p className="mt-4 text-sm text-[var(--ink-muted)]">Already in this circle on another device? Open your private resume link — the one you saved when you first joined.</p>
       </Shell>
     );
   }
@@ -226,19 +241,38 @@ export default function CircleClient({ code }: { code: string }) {
 
   return (
     <Shell>
-      <header className="mb-6 flex items-center justify-between">
+      <header className="mb-6 flex items-center justify-between gap-2">
         <div>
           <div className="text-sm font-bold text-[var(--amber-ink)]">Mogji Circles</div>
           <h1 className="text-3xl font-black">{home.circle.vibeEmoji} {home.circle.name}</h1>
         </div>
-        <button title="Invite your circle" className="secondary-button" onClick={inviteCircle}>
-          <span aria-hidden="true">↗</span> {inviteState === "copied" ? "Copied!" : "Invite"}
-        </button>
+        <div className="flex gap-2">
+          <button title="Save your private resume link" className="icon-button" onClick={copyResumeLink}>
+            <span aria-hidden="true">🔑</span>
+          </button>
+          <button title="Invite your circle" className="secondary-button" onClick={inviteCircle}>
+            <span aria-hidden="true">↗</span> {inviteState === "copied" ? "Copied!" : "Invite"}
+          </button>
+        </div>
       </header>
       {inviteState === "copied" ? (
         <p className="mb-4 rounded-2xl border border-[var(--line)] bg-[var(--paper-raised)] p-3 text-sm font-bold">
           Invite copied — paste it in the chat: {location.origin}/c/{code}
         </p>
+      ) : null}
+      {resumeState === "copied" ? (
+        <p className="mb-4 rounded-2xl border border-[var(--line)] bg-[var(--paper-raised)] p-3 text-sm font-bold">
+          Resume link copied — this one is just for you. Keep it private; anyone with it can sign in as you.
+        </p>
+      ) : null}
+      {justJoined && !resumeBannerDismissed ? (
+        <div className="mb-4 rounded-2xl border border-[var(--amber-ink)] bg-[var(--paper-raised)] p-4">
+          <p className="mb-3 font-bold">🔑 This is your key back into the circle — keep it to yourself. Save it now in case you switch devices or browsers.</p>
+          <div className="flex gap-2">
+            <button className="primary-button" onClick={copyResumeLink}>{resumeState === "copied" ? "Copied!" : "Copy my link"}</button>
+            <button className="secondary-button" onClick={() => setResumeBannerDismissed(true)}>Got it</button>
+          </div>
+        </div>
       ) : null}
 
       {error ? <ErrorLine message={error} /> : null}
